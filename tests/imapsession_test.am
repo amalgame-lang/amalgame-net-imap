@@ -1,0 +1,108 @@
+// Test suite for amalgame-net-imap — the ImapSession state machine,
+// driven with strings against a real local MailStore (no socket, no TLS;
+// SetTlsActive(true) simulates post-STARTTLS).
+
+namespace Tests
+
+import Amalgame.Collections
+import Amalgame.IO.Filesystem
+import Amalgame.Database.SQLite
+import Amalgame.Tls
+import Amalgame.Net.Mail
+import Amalgame.Net.Imap
+
+public class Program {
+    public static void Main(string[] args) {
+        let root: string = "/tmp/amalgame-imap-test"
+        Filesystem.Remove(root)
+        let store: MailStore = MailStore.Open(root)
+        let u1: int = store.Deliver("INBOX", "Subject: One\r\nFrom: a@b.com\r\n\r\nbody one")
+        let u2: int = store.Deliver("INBOX", "Subject: Two\r\nFrom: c@d.com\r\n\r\nbody two")
+
+        let s: ImapSession = new ImapSession(store, "imap.test")
+        s.AddPassword("alice", "s3cret")
+
+        // 1. greeting
+        let g: string = s.Greeting()
+        if (String_Contains(g, "* OK") && String_Contains(g, "CAPABILITY")) { Console.WriteLine("[PASS] greeting") }
+        else { Console.WriteLine("[FAIL] greeting: " + g) }
+
+        // 2. capability
+        let c: string = s.Feed("a1 CAPABILITY")
+        if (String_Contains(c, "* CAPABILITY IMAP4rev1") && String_Contains(c, "a1 OK")) { Console.WriteLine("[PASS] capability") }
+        else { Console.WriteLine("[FAIL] capability: " + c) }
+
+        // 3. login refused before TLS
+        let l0: string = s.Feed("a2 LOGIN alice s3cret")
+        if (String_Contains(l0, "a2 NO")) { Console.WriteLine("[PASS] login refused pre-tls") }
+        else { Console.WriteLine("[FAIL] login refused pre-tls: " + l0) }
+
+        s.SetTlsActive(true)
+
+        // 4. login success
+        let l1: string = s.Feed("a3 LOGIN alice s3cret")
+        let authed: bool = s.Authed
+        if (String_Contains(l1, "a3 OK") && authed) { Console.WriteLine("[PASS] login success") }
+        else { Console.WriteLine("[FAIL] login success: " + l1) }
+
+        // 5. login failure (separate session)
+        let s2: ImapSession = new ImapSession(store, "imap.test")
+        s2.AddPassword("alice", "s3cret")
+        s2.SetTlsActive(true)
+        let lf: string = s2.Feed("b1 LOGIN alice wrong")
+        if (String_Contains(lf, "b1 NO")) { Console.WriteLine("[PASS] login failure") }
+        else { Console.WriteLine("[FAIL] login failure: " + lf) }
+
+        // 6. list
+        let li: string = s.Feed("a4 LIST \"\" \"*\"")
+        if (String_Contains(li, "INBOX") && String_Contains(li, "a4 OK")) { Console.WriteLine("[PASS] list") }
+        else { Console.WriteLine("[FAIL] list: " + li) }
+
+        // 7. select
+        let sel: string = s.Feed("a5 SELECT INBOX")
+        if (String_Contains(sel, "2 EXISTS") && String_Contains(sel, "UIDVALIDITY")
+            && String_Contains(sel, "a5 OK")) { Console.WriteLine("[PASS] select") }
+        else { Console.WriteLine("[FAIL] select: " + sel) }
+
+        // 8. fetch body
+        let fe: string = s.Feed("a6 FETCH 1 (FLAGS RFC822.SIZE BODY[])")
+        if (String_Contains(fe, "* 1 FETCH (") && String_Contains(fe, "BODY[] {")
+            && String_Contains(fe, "body one") && String_Contains(fe, "a6 OK")) { Console.WriteLine("[PASS] fetch body") }
+        else { Console.WriteLine("[FAIL] fetch body: " + fe) }
+
+        // 9. uid fetch
+        let uf: string = s.Feed("a7 UID FETCH " + String_FromInt(u1) + " (FLAGS)")
+        if (String_Contains(uf, "UID " + String_FromInt(u1)) && String_Contains(uf, "a7 OK UID FETCH")) { Console.WriteLine("[PASS] uid fetch") }
+        else { Console.WriteLine("[FAIL] uid fetch: " + uf) }
+
+        // 10. store +FLAGS \Seen
+        let st: string = s.Feed("a8 STORE 1 +FLAGS (\\Seen)")
+        let f1: string = store.Flags("INBOX", u1)
+        if (String_Contains(st, "FLAGS (\\Seen)") && String_Contains(st, "a8 OK") && String_Contains(f1, "\\Seen")) { Console.WriteLine("[PASS] store flags") }
+        else { Console.WriteLine("[FAIL] store flags: " + st + " | stored=" + f1) }
+
+        // 11. search all
+        let sa: string = s.Feed("a9 SEARCH ALL")
+        if (String_Contains(sa, "* SEARCH 1 2") && String_Contains(sa, "a9 OK")) { Console.WriteLine("[PASS] search all") }
+        else { Console.WriteLine("[FAIL] search all: " + sa) }
+
+        // 12. search seen (only msg 1)
+        let ss: string = s.Feed("a10 SEARCH SEEN")
+        if (String_Contains(ss, "* SEARCH 1\r\n") && String_Contains(ss, "a10 OK")) { Console.WriteLine("[PASS] search seen") }
+        else { Console.WriteLine("[FAIL] search seen: " + ss) }
+
+        // 13. expunge a \Deleted message
+        let sd: string = s.Feed("a11 STORE 2 +FLAGS (\\Deleted)")
+        let ex: string = s.Feed("a12 EXPUNGE")
+        let sel2: string = s.Feed("a13 SELECT INBOX")
+        if (String_Contains(ex, "* 2 EXPUNGE") && String_Contains(ex, "a12 OK")
+            && String_Contains(sel2, "1 EXISTS")) { Console.WriteLine("[PASS] expunge") }
+        else { Console.WriteLine("[FAIL] expunge: " + ex + " | " + sel2) }
+
+        // 14. logout
+        let lo: string = s.Feed("a14 LOGOUT")
+        let out: bool = s.IsLoggedOut()
+        if (String_Contains(lo, "* BYE") && String_Contains(lo, "a14 OK") && out) { Console.WriteLine("[PASS] logout") }
+        else { Console.WriteLine("[FAIL] logout: " + lo) }
+    }
+}

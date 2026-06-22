@@ -1,0 +1,37 @@
+# Package manifest — amalgame-net-imap
+#
+# IMAP4rev1 server for the native Amalgame mail server (Phase 4): lets a
+# mail client read the messages SMTP delivered into an
+# amalgame-net-mail-store MailStore. Two layers: ImapSession (the IMAP
+# command state machine — pure logic, socket/TLS-free, unit-testable) and
+# ImapServer (the TcpServer accept loop + STARTTLS upgrade via
+# amalgame-tls). LOGIN verifies scrypt hashes via amalgame-crypto
+# Password.Verify (one unified account); LOGIN refused before TLS.
+#
+# See Amalgame/docs/proposals/native-mail-server.md.
+#
+# Installation:
+#
+#   amc package add net-imap
+#   amc package add github.com/amalgame-lang/amalgame-net-imap@v0.1.0
+
+[package]
+name              = "amalgame-net-imap"
+version           = "0.1.0"
+license           = "Apache-2.0"
+description       = "IMAP4rev1 server for the native Amalgame mail server: ImapSession state machine (CAPABILITY/STARTTLS/LOGIN/LIST/SELECT/FETCH/STORE/SEARCH/EXPUNGE) + ImapServer TCP/TLS loop, reading an amalgame-net-mail-store. AUTH via scrypt (amalgame-crypto)."
+authors           = ["Bastien Mouget"]
+required-amalgame = ">=0.8.72"
+schema-version    = 1
+
+[dependencies]
+amalgame-net-mail-store = ">=0.1.0"
+amalgame-crypto         = ">=0.6.0"
+amalgame-tls            = ">=0.3.5"
+
+[stdlib]
+classes   = ["ImapSession", "ImapServer"]
+header    = "facade-stub.h"
+namespace = "Amalgame.Net.Imap"
+facade    = "facade.am"
+libs      = []
