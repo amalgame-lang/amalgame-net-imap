@@ -1,0 +1,26 @@
+// Smoke-test fixture: a real IMAP server on 127.0.0.1:2527 over a temp
+// MailStore preloaded with one message, with STARTTLS (self-signed cert)
+// and one account (alice/s3cret). Driven by tests/smoke_test.sh, which
+// connects a real Python imaplib client (STARTTLS → LOGIN → SELECT →
+// SEARCH → FETCH) and asserts it reads the message back. Blocks in Serve.
+
+namespace Smoke
+
+import Amalgame.Collections
+import Amalgame.Database.SQLite
+import Amalgame.Tls
+import Amalgame.Net.Mail
+import Amalgame.Net.Imap
+
+public class Program {
+    public static void Main(string[] args) {
+        let base: string = "/tmp/amalgame-imap-smoke"
+        let store: MailStore = MailStore.Open(base + "/store")
+        let uid: int = store.Deliver("INBOX", "Subject: Smoke\r\nFrom: s@e.com\r\n\r\nhello imap smoke")
+        let srv: ImapServer = new ImapServer(store, "imap.test")
+        srv.AddPassword("alice", "s3cret")
+        let srv2: ImapServer = srv.WithCert(base + "/cert.pem", base + "/key.pem")
+        Console.WriteLine("SMOKE-SERVER-READY")
+        srv2.Serve(2527)
+    }
+}
