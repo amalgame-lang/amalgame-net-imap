@@ -43,12 +43,21 @@ import Amalgame.Tls
 // (clients can fetch the whole message and parse with formats-mime);
 // IDLE; per-recipient routing; folders beyond what the store exposes.
 
+// Per-user store routing : maps an authenticated login to ITS own MailStore,
+// so each account reads its own mailbox instead of a shared one. Injected by
+// the consumer (closure), null = single shared store (legacy behaviour).
+public class StoreResolver {
+    public Fn: Closure<string, MailStore>
+    public StoreResolver(Closure<string, MailStore> fn) { this.Fn = fn }
+}
+
 public class ImapSession {
     public  Store:     MailStore
     public  Users:     Map<string, string>
     public  TlsActive: bool
     public  Authed:    bool
     public  AuthUser:  string
+    public  Resolver:  StoreResolver     // per-user store routing (null = shared)
 
     private SelMb:     string          // selected mailbox ("" = none)
     private SelUids:   List<int>       // UID snapshot taken at SELECT (seq = index+1)
@@ -59,6 +68,7 @@ public class ImapSession {
 
     public ImapSession(store: MailStore, host: string) {
         this.Store     = store
+        this.Resolver  = null
         this.Users     = new Map<string, string>()
         this.TlsActive = false
         this.Authed    = false
@@ -136,6 +146,8 @@ public class ImapSession {
             this.Authed = true
             this.AuthUser = user
             this.AuthFails = 0
+            // Per-user store routing : switch to THIS user's mailbox store.
+            if (this.Resolver != null) { this.Store = this.Resolver.Fn(user) }
             return tag + " OK LOGIN completed\r\n"
         }
         this.AuthFails = this.AuthFails + 1
@@ -449,6 +461,7 @@ public class ImapServer {
     private Cert:    string
     private Key:     string
     private HasCert: bool
+    private Resolver: StoreResolver   // per-user store routing (null = shared)
 
     public ImapServer(store: MailStore, host: string) {
         this.Store = store
@@ -457,11 +470,17 @@ public class ImapServer {
         this.Cert = ""
         this.Key = ""
         this.HasCert = false
+        this.Resolver = null
     }
     public void AddPassword(string name, string plaintext) { this.Users.Set(name, Password.Hash(plaintext)) }
     public void AddUserHash(string name, string hash)      { this.Users.Set(name, hash) }
     public ImapServer WithCert(string certPath, string keyPath) {
         this.Cert = certPath; this.Key = keyPath; this.HasCert = true; return this
+    }
+    // Inject per-user store routing: on LOGIN the session switches to the
+    // store returned by fn(login) → each account reads its own mailbox.
+    public ImapServer WithStoreResolver(Closure<string, MailStore> fn) {
+        this.Resolver = new StoreResolver(fn); return this
     }
 
     public void Serve(int port) {
@@ -496,6 +515,7 @@ public class ImapServer {
     private void handleTls(int fd) {
         if (!this.HasCert) { @c { close((int) fd); } return }
         let sess: ImapSession = new ImapSession(this.Store, this.Host)
+        sess.Resolver = this.Resolver
         let keys: List<string> = this.Users.Keys()
         let nk: int = keys.Count()
         for i in 0..nk {
@@ -537,6 +557,7 @@ public class ImapServer {
 
     private void handle(int fd) {
         let sess: ImapSession = new ImapSession(this.Store, this.Host)
+        sess.Resolver = this.Resolver
         let keys: List<string> = this.Users.Keys()
         let nk: int = keys.Count()
         for i in 0..nk {
