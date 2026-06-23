@@ -477,6 +477,64 @@ public class ImapServer {
         TcpServer_Close(srv)
     }
 
+    // Implicit-TLS accept loop (IMAPS, :993) : the socket is TLS-wrapped
+    // immediately on accept (no plaintext phase), then the IMAP dialogue runs
+    // over TLS with the greeting sent encrypted. Requires WithCert.
+    public void ServeTls(int port) {
+        let srv = TcpServer_Listen(port, 64)
+        while (TcpServer_IsListening(srv)) {
+            let conn = TcpServer_Accept(srv)
+            if (TcpConn_IsConnected(conn)) {
+                var fd: int = -1
+                @c { fd = ((AmalgameTcpConn*) conn)->_fd; }
+                this.handleTls(fd)
+            }
+        }
+        TcpServer_Close(srv)
+    }
+
+    private void handleTls(int fd) {
+        if (!this.HasCert) { @c { close((int) fd); } return }
+        let sess: ImapSession = new ImapSession(this.Store, this.Host)
+        let keys: List<string> = this.Users.Keys()
+        let nk: int = keys.Count()
+        for i in 0..nk {
+            let k: string = keys.Get(i)
+            let v: string = this.Users.Get(k)
+            sess.AddUserHash(k, v)
+        }
+        ImapServer.setRecvTimeout(fd, 60)
+        let cfg0: TlsConfig = TlsConfig.Default()
+        let cfg:  TlsConfig = TlsConfig.WithCertFile(cfg0, this.Cert, this.Key)
+        let ctx:  TlsContext = TlsContext.Server(cfg)
+        let tls:  TlsStream = TlsStream.Wrap(fd, ctx, true)
+        let hs:   bool = TlsStream.Handshake(tls)
+        if (hs) {
+            sess.SetTlsActive(true)
+            ImapServer.sendTls(tls, sess.Greeting())
+            var tbuf: string = ""
+            var done: bool = false
+            while (!done) {
+                let nl: int = String_IndexOf(tbuf, "\r\n")
+                if (nl < 0) {
+                    if (String_Length(tbuf) > 65536) { done = true }
+                    else {
+                        let chunk: string = ImapServer.recvTls(tls, 4096)
+                        if (String_Length(chunk) == 0) { done = true }
+                        else { tbuf = tbuf + chunk }
+                    }
+                } else {
+                    let line: string = String_Substring(tbuf, 0, nl)
+                    tbuf = String_Substring(tbuf, nl + 2, String_Length(tbuf) - nl - 2)
+                    let resp: string = sess.Feed(line)
+                    if (String_Length(resp) > 0) { ImapServer.sendTls(tls, resp) }
+                    if (sess.IsLoggedOut()) { done = true }
+                }
+            }
+        }
+        TlsStream.Close(tls)
+    }
+
     private void handle(int fd) {
         let sess: ImapSession = new ImapSession(this.Store, this.Host)
         let keys: List<string> = this.Users.Keys()
