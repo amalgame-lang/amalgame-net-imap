@@ -117,6 +117,7 @@ check "[PASS] search all"
 check "[PASS] search seen"
 check "[PASS] expunge"
 check "[PASS] logout"
+check "[PASS] login lockout"
 echo "$OUT" | grep -q "\[FAIL\]" && FAIL=$((FAIL+1))
 echo "────────────────────────────────────────────"
 echo -e "  ${GREEN}PASS: $PASS${NC}  |  ${RED}FAIL: $FAIL${NC}"
