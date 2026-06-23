@@ -99,6 +99,19 @@ public class Program {
             && String_Contains(sel2, "1 EXISTS")) { Console.WriteLine("[PASS] expunge") }
         else { Console.WriteLine("[FAIL] expunge: " + ex + " | " + sel2) }
 
+        // 15. AUTH brute-force lockout
+        let lk: ImapSession = new ImapSession(store, "imap.test")
+        lk.AddPassword("alice", "s3cret")
+        lk.SetTlsActive(true)
+        var lkf: int = 0
+        for i in 0..5 {
+            let rr: string = lk.Feed("z" + String_FromInt(i) + " LOGIN alice wrongpass")
+            if (String_Contains(rr, "NO")) { lkf = lkf + 1 }
+        }
+        let lkd: string = lk.Feed("z9 LOGIN alice s3cret")
+        if (lkf == 5 && String_Contains(lkd, "too many")) { Console.WriteLine("[PASS] login lockout") }
+        else { Console.WriteLine("[FAIL] login lockout: lf=" + String_FromInt(lkf) + " r=" + lkd) }
+
         // 14. logout
         let lo: string = s.Feed("a14 LOGOUT")
         let out: bool = s.IsLoggedOut()

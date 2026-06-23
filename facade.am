@@ -54,6 +54,8 @@ public class ImapSession {
     private SelUids:   List<int>       // UID snapshot taken at SELECT (seq = index+1)
     private Upgrade:   bool
     private LoggedOut: bool
+    private AuthFails: int             // failed LOGINs (brute-force lockout)
+    private MaxAuthFails: int
 
     public ImapSession(store: MailStore, host: string) {
         this.Store     = store
@@ -65,6 +67,8 @@ public class ImapSession {
         this.SelUids   = new List<int>()
         this.Upgrade   = false
         this.LoggedOut = false
+        this.AuthFails = 0
+        this.MaxAuthFails = 5
     }
 
     public void AddPassword(string name, string plaintext) { this.Users.Set(name, Password.Hash(plaintext)) }
@@ -125,14 +129,17 @@ public class ImapSession {
 
     private string login(string tag, string rest) {
         if (!this.TlsActive) { return tag + " NO [PRIVACYREQUIRED] TLS required before LOGIN\r\n" }
+        if (this.AuthFails >= this.MaxAuthFails) { return tag + " NO [AUTHFAILED] too many login attempts\r\n" }
         let user: string = ImapSession.unquote(ImapSession.token(rest, 0))
         let pass: string = ImapSession.unquote(ImapSession.token(rest, 1))
         if (this.Users.Has(user) && Password.Verify(pass, this.Users.Get(user))) {
             this.Authed = true
             this.AuthUser = user
+            this.AuthFails = 0
             return tag + " OK LOGIN completed\r\n"
         }
-        return tag + " NO LOGIN failed\r\n"
+        this.AuthFails = this.AuthFails + 1
+        return tag + " NO [AUTHFAILED] LOGIN failed\r\n"
     }
 
     private string list(string tag, string cmd) {
