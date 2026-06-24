@@ -119,6 +119,18 @@ public class Program {
             Console.WriteLine("[PASS] noop reports new EXISTS")
         } else { Console.WriteLine("[FAIL] noop new EXISTS: " + noop) }
 
+        // 17. INBOX insensible à la casse : SELECT "Inbox" voit les messages d'INBOX
+        let selci: string = s.Feed("a13c SELECT \"Inbox\"")
+        if (String_Contains(selci, "* 2 EXISTS") && String_Contains(selci, "a13c OK")) {
+            Console.WriteLine("[PASS] INBOX case-insensitive")
+        } else { Console.WriteLine("[FAIL] INBOX case: " + selci) }
+
+        // 18. STATUS renvoie les compteurs
+        let stat: string = s.Feed("a13d STATUS \"Inbox\" (MESSAGES UIDNEXT UNSEEN)")
+        if (String_Contains(stat, "* STATUS") && String_Contains(stat, "MESSAGES 2") && String_Contains(stat, "a13d OK")) {
+            Console.WriteLine("[PASS] STATUS")
+        } else { Console.WriteLine("[FAIL] STATUS: " + stat) }
+
         // 14. logout
         let lo: string = s.Feed("a14 LOGOUT")
         let out: bool = s.IsLoggedOut()
