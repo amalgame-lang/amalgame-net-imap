@@ -372,18 +372,30 @@ public class ImapSession {
     }
     // Contenu d'une section BODY[spec].
     private static string sectionContent(string msg, string spec) {
-        let up: string = String_ToUpper(String_Trim(spec))
+        let trimmed: string = String_Trim(spec)
+        let up: string = String_ToUpper(trimmed)
         if (String_Length(up) == 0) { return msg }                       // BODY[]
         if (up == "HEADER") { return ImapSession.headerBlock(msg) + "\r\n\r\n" }
-        // TEXT / partie 1 : on présente le message comme une seule partie texte
-        // DÉCODÉE (sinon le client affiche le MIME brut + base64/QP).
-        if (up == "TEXT" || up == "1") { return ImapSession.displayBody(msg) }
+        if (up == "TEXT") { return ImapSession.bodyPart(msg) }            // corps brut (haut niveau)
         if (String_StartsWith(up, "HEADER.FIELDS")) {
             let lp: int = String_IndexOf(spec, "(")
             let rp: int = String_IndexOf(spec, ")")
             var fields: string = ""
             if (lp >= 0 && rp > lp) { fields = String_Substring(spec, lp + 1, rp - lp - 1) }
             return ImapSession.selectFields(ImapSession.headerBlock(msg), fields) + "\r\n"
+        }
+        // Section numérotée "1", "2", "1.1" (+ suffixe .TEXT/.MIME) → partie MIME.
+        // On renvoie le corps BRUT de la partie (encodage déclaré dans BODYSTRUCTURE,
+        // décodé par le client) — c'est ainsi qu'une pièce jointe (image) est servie.
+        if (ImapSession.startsDigit(trimmed)) {
+            var path: string = trimmed
+            let dot: int = String_IndexOf(up, ".")
+            if (dot >= 0) {
+                let suf: string = String_Substring(up, dot + 1, String_Length(up) - dot - 1)
+                if (suf == "MIME" || suf == "TEXT" || suf == "HEADER") { path = String_Substring(trimmed, 0, dot) }
+            }
+            let part: MimePart = ImapSession.navPart(Mime.Parse(msg), path)
+            return part.RawBody
         }
         return msg
     }
@@ -451,29 +463,74 @@ public class ImapSession {
         }
         return "01-Jan-2020 00:00:00 +0000"
     }
-    // Corps à afficher : meilleure partie texte DÉCODÉE (text/plain, sinon HTML).
-    private static string displayBody(string msg) {
-        let mp: MimePart = Mime.Parse(msg)
-        let t: string = mp.TextBody()
-        if (String_Length(t) > 0) { return t }
-        return mp.HtmlBody()
+    private static bool startsDigit(string s) {
+        if (String_Length(s) == 0) { return false }
+        let c: string = String_Substring(s, 0, 1)
+        return c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+            || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
     }
-    // BODYSTRUCTURE : message présenté comme UNE partie texte décodée (suffisant
-    // pour l'affichage mobile ; le client récupère ensuite BODY[1]/BODY[TEXT]).
-    private static string bodyStructure(string msg) {
-        let mp: MimePart = Mime.Parse(msg)
-        let t: string = mp.TextBody()
-        var sub: string = "PLAIN"
-        var content: string = t
-        if (String_Length(t) == 0) {
-            let h: string = mp.HtmlBody()
-            if (String_Length(h) > 0) { sub = "HTML"; content = h }
-        }
-        let octets: int = String_Length(content)
-        var lines: int = 0
+    // Navigue jusqu'à la partie MIME désignée par un chemin "2" ou "1.1".
+    private static MimePart navPart(MimePart top, string path) {
+        let nums: List<string> = String_Split(path, ".")
+        var cur: MimePart = top
         var i: int = 0
-        while (i < String_Length(content)) { if (String_Substring(content, i, 1) == "\n") { lines = lines + 1 } i = i + 1 }
-        return "(\"TEXT\" \"" + sub + "\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" " + String_FromInt(octets) + " " + String_FromInt(lines) + ")"
+        while (i < nums.Count()) {
+            let idx: int = String_ToInt(nums.Get(i)) - 1
+            if (cur.IsMultipart()) {
+                let kids: List<MimePart> = cur.Parts()
+                if (idx >= 0 && idx < kids.Count()) { cur = cur.PartAt(idx) }
+            }
+            i = i + 1
+        }
+        return cur
+    }
+    // Sous-type d'un Content-Type ("multipart/mixed; ..." → "mixed").
+    private static string subtypeOf(string ct) {
+        let slash: int = String_IndexOf(ct, "/")
+        if (slash < 0) { return "MIXED" }
+        var s: string = String_Substring(ct, slash + 1, String_Length(ct) - slash - 1)
+        let semi: int = String_IndexOf(s, ";")
+        if (semi >= 0) { s = String_Substring(s, 0, semi) }
+        return String_Trim(s)
+    }
+    // BODYSTRUCTURE : structure MIME RÉELLE (récursive) → le client voit chaque
+    // partie, dont les pièces jointes (NAME=fichier), et récupère BODY[<n>].
+    private static string bodyStructure(string msg) {
+        return ImapSession.bodyStructureOf(Mime.Parse(msg))
+    }
+    private static string bodyStructureOf(MimePart p) {
+        if (p.IsMultipart()) {
+            let kids: List<MimePart> = p.Parts()
+            var inner: string = ""
+            var i: int = 0
+            while (i < kids.Count()) { inner = inner + ImapSession.bodyStructureOf(kids.Get(i)); i = i + 1 }
+            return "(" + inner + " \"" + String_ToUpper(ImapSession.subtypeOf(p.ContentType())) + "\")"
+        }
+        let ct: string = p.ContentType()
+        let slash: int = String_IndexOf(ct, "/")
+        var typ: string = ct
+        var sub: string = "PLAIN"
+        if (slash >= 0) {
+            typ = String_Substring(ct, 0, slash)
+            sub = ImapSession.subtypeOf(ct)
+        }
+        typ = String_ToUpper(String_Trim(typ))
+        sub = String_ToUpper(sub)
+        var enc: string = String_ToUpper(String_Trim(p.Encoding()))
+        if (String_Length(enc) == 0) { enc = "7BIT" }
+        let octets: int = String_Length(p.RawBody)
+        if (typ == "TEXT") {
+            var cs: string = p.Charset()
+            if (String_Length(cs) == 0) { cs = "utf-8" }
+            var lines: int = 0
+            var k: int = 0
+            while (k < String_Length(p.RawBody)) { if (String_Substring(p.RawBody, k, 1) == "\n") { lines = lines + 1 } k = k + 1 }
+            return "(\"TEXT\" \"" + sub + "\" (\"CHARSET\" \"" + cs + "\") NIL NIL \"" + enc + "\" " + String_FromInt(octets) + " " + String_FromInt(lines) + ")"
+        }
+        let fn: string = p.Filename()
+        var param: string = "NIL"
+        if (String_Length(fn) > 0) { param = "(\"NAME\" \"" + fn + "\")" }
+        return "(\"" + typ + "\" \"" + sub + "\" " + param + " NIL NIL \"" + enc + "\" " + String_FromInt(octets) + ")"
     }
 
     private string store(string tag, string rest, bool byUid) {
