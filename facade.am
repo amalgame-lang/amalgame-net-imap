@@ -6,6 +6,7 @@ import Amalgame.Crypto
 import Amalgame.Database.SQLite
 import Amalgame.Net.Mail
 import Amalgame.Tls
+import Amalgame.Formats.Mime
 
 @c {
     #include <string.h>
@@ -321,7 +322,9 @@ public class ImapSession {
         let up: string = String_ToUpper(String_Trim(spec))
         if (String_Length(up) == 0) { return msg }                       // BODY[]
         if (up == "HEADER") { return ImapSession.headerBlock(msg) + "\r\n\r\n" }
-        if (up == "TEXT") { return ImapSession.bodyPart(msg) }
+        // TEXT / partie 1 : on présente le message comme une seule partie texte
+        // DÉCODÉE (sinon le client affiche le MIME brut + base64/QP).
+        if (up == "TEXT" || up == "1") { return ImapSession.displayBody(msg) }
         if (String_StartsWith(up, "HEADER.FIELDS")) {
             let lp: int = String_IndexOf(spec, "(")
             let rp: int = String_IndexOf(spec, ")")
@@ -395,18 +398,28 @@ public class ImapSession {
         }
         return "01-Jan-2020 00:00:00 +0000"
     }
-    // BODYSTRUCTURE : présente le message comme une seule partie texte (suffisant
-    // pour l'affichage mobile du corps ; le client récupère ensuite BODY[TEXT]).
+    // Corps à afficher : meilleure partie texte DÉCODÉE (text/plain, sinon HTML).
+    private static string displayBody(string msg) {
+        let mp: MimePart = Mime.Parse(msg)
+        let t: string = mp.TextBody()
+        if (String_Length(t) > 0) { return t }
+        return mp.HtmlBody()
+    }
+    // BODYSTRUCTURE : message présenté comme UNE partie texte décodée (suffisant
+    // pour l'affichage mobile ; le client récupère ensuite BODY[1]/BODY[TEXT]).
     private static string bodyStructure(string msg) {
-        let hdr: string = ImapSession.headerBlock(msg)
-        let ct: string = String_ToLower(ImapSession.headerVal(hdr, "content-type"))
+        let mp: MimePart = Mime.Parse(msg)
+        let t: string = mp.TextBody()
         var sub: string = "PLAIN"
-        if (String_Contains(ct, "text/html")) { sub = "HTML" }
-        let body: string = ImapSession.bodyPart(msg)
-        let octets: int = String_Length(body)
+        var content: string = t
+        if (String_Length(t) == 0) {
+            let h: string = mp.HtmlBody()
+            if (String_Length(h) > 0) { sub = "HTML"; content = h }
+        }
+        let octets: int = String_Length(content)
         var lines: int = 0
         var i: int = 0
-        while (i < String_Length(body)) { if (String_Substring(body, i, 1) == "\n") { lines = lines + 1 } i = i + 1 }
+        while (i < String_Length(content)) { if (String_Substring(content, i, 1) == "\n") { lines = lines + 1 } i = i + 1 }
         return "(\"TEXT\" \"" + sub + "\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" " + String_FromInt(octets) + " " + String_FromInt(lines) + ")"
     }
 
