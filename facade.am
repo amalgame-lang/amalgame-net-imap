@@ -237,10 +237,7 @@ public class ImapSession {
     private string fetch(string tag, string rest, bool byUid) {
         if (String_Length(this.SelMb) == 0) { return tag + " NO No mailbox selected\r\n" }
         let setSpec: string = ImapSession.token(rest, 0)
-        let items: string = String_ToUpper(ImapSession.after(rest, 1))
-        let wantBody: bool = String_Contains(items, "BODY") || String_Contains(items, "RFC822")
-        let wantSize: bool = String_Contains(items, "RFC822.SIZE") || String_Contains(items, "SIZE")
-        let wantFlags: bool = String_Contains(items, "FLAGS")
+        let rawItems: string = ImapSession.after(rest, 1)   // garde la casse (labels BODY[...])
         var out: string = ""
         let cnt: int = this.SelUids.Count()
         for s in 1..(cnt + 1) {
@@ -248,31 +245,169 @@ public class ImapSession {
             var hit: bool = false
             if (byUid) { hit = ImapSession.inSet(setSpec, uid, this.maxUid()) }
             else { hit = ImapSession.inSet(setSpec, s, cnt) }
-            if (hit) {
-                out = out + this.fetchOne(s, uid, byUid, wantBody, wantSize, wantFlags)
-            }
+            if (hit) { out = out + this.fetchOne(s, uid, byUid, rawItems) }
         }
         return out + tag + " OK " + this.uidTag(byUid) + "FETCH completed\r\n"
     }
 
-    private string fetchOne(int seq, int uid, bool byUid, bool wantBody, bool wantSize, bool wantFlags) {
+    private string fetchOne(int seq, int uid, bool byUid, string rawItems) {
+        let up: string = String_ToUpper(rawItems)
+        let msg: string = this.Store.Read(this.SelMb, uid)
         var parts: string = ""
-        // UID is always returned for UID FETCH; harmless to include otherwise on request.
-        if (byUid) { parts = ImapSession.join(parts, "UID " + String_FromInt(uid)) }
-        if (wantFlags) {
-            let fl: string = this.Store.Flags(this.SelMb, uid)
-            parts = ImapSession.join(parts, "FLAGS (" + fl + ")")
+        if (byUid || String_Contains(up, "UID")) { parts = ImapSession.join(parts, "UID " + String_FromInt(uid)) }
+        if (String_Contains(up, "FLAGS")) {
+            parts = ImapSession.join(parts, "FLAGS (" + this.Store.Flags(this.SelMb, uid) + ")")
         }
-        if (wantSize) {
-            let sz: int = this.Store.Size(this.SelMb, uid)
-            parts = ImapSession.join(parts, "RFC822.SIZE " + String_FromInt(sz))
+        if (String_Contains(up, "INTERNALDATE")) {
+            parts = ImapSession.join(parts, "INTERNALDATE \"" + ImapSession.internalDate(msg) + "\"")
         }
-        if (wantBody) {
-            let body: string = this.Store.Read(this.SelMb, uid)
-            let blen: int = String_Length(body)
-            parts = ImapSession.join(parts, "BODY[] {" + String_FromInt(blen) + "}\r\n" + body)
+        if (String_Contains(up, "RFC822.SIZE")) {
+            parts = ImapSession.join(parts, "RFC822.SIZE " + String_FromInt(this.Store.Size(this.SelMb, uid)))
+        }
+        // Section BODY[...] / BODY.PEEK[...] (HEADER.FIELDS / HEADER / TEXT / vide).
+        let bspec: string = ImapSession.bodySpec(rawItems)
+        if (bspec != "<none>") {
+            let content: string = ImapSession.sectionContent(msg, bspec)
+            parts = ImapSession.join(parts, "BODY[" + bspec + "] {" + String_FromInt(String_Length(content)) + "}\r\n" + content)
+            if (!String_Contains(up, "BODY.PEEK")) { this.Store.SetFlags(this.SelMb, uid, "\\Seen") }
+        }
+        else if (String_Contains(up, "RFC822.HEADER")) {
+            let c: string = ImapSession.sectionContent(msg, "HEADER")
+            parts = ImapSession.join(parts, "RFC822.HEADER {" + String_FromInt(String_Length(c)) + "}\r\n" + c)
+        }
+        else if (String_Contains(up, "RFC822.TEXT")) {
+            let c: string = ImapSession.sectionContent(msg, "TEXT")
+            parts = ImapSession.join(parts, "RFC822.TEXT {" + String_FromInt(String_Length(c)) + "}\r\n" + c)
+            this.Store.SetFlags(this.SelMb, uid, "\\Seen")
+        }
+        else if (String_Contains(up, "RFC822")) {
+            parts = ImapSession.join(parts, "RFC822 {" + String_FromInt(String_Length(msg)) + "}\r\n" + msg)
+            this.Store.SetFlags(this.SelMb, uid, "\\Seen")
+        }
+        // BODYSTRUCTURE : structure MIME (réutilise un parseur simple).
+        if (String_Contains(up, "BODYSTRUCTURE")) {
+            parts = ImapSession.join(parts, "BODYSTRUCTURE " + ImapSession.bodyStructure(msg))
         }
         return "* " + String_FromInt(seq) + " FETCH (" + parts + ")\r\n"
+    }
+
+    // Renvoie le contenu entre crochets d'un BODY[...]/BODY.PEEK[...], ou "<none>".
+    private static string bodySpec(string items) {
+        let up: string = String_ToUpper(items)
+        var start: int = -1
+        let pk: int = String_IndexOf(up, "BODY.PEEK[")
+        if (pk >= 0) { start = pk + 10 }
+        else { let b: int = String_IndexOf(up, "BODY["); if (b >= 0) { start = b + 5 } }
+        if (start < 0) { return "<none>" }
+        let tail: string = String_Substring(items, start, String_Length(items) - start)
+        let close: int = String_IndexOf(tail, "]")
+        if (close < 0) { return "<none>" }
+        return String_Substring(tail, 0, close)
+    }
+
+    // Header block (avant la ligne vide) d'un message brut.
+    private static string headerBlock(string msg) {
+        let split: int = String_IndexOf(msg, "\r\n\r\n")
+        if (split < 0) { return msg }
+        return String_Substring(msg, 0, split)
+    }
+    private static string bodyPart(string msg) {
+        let split: int = String_IndexOf(msg, "\r\n\r\n")
+        if (split < 0) { return "" }
+        return String_Substring(msg, split + 4, String_Length(msg) - split - 4)
+    }
+    // Contenu d'une section BODY[spec].
+    private static string sectionContent(string msg, string spec) {
+        let up: string = String_ToUpper(String_Trim(spec))
+        if (String_Length(up) == 0) { return msg }                       // BODY[]
+        if (up == "HEADER") { return ImapSession.headerBlock(msg) + "\r\n\r\n" }
+        if (up == "TEXT") { return ImapSession.bodyPart(msg) }
+        if (String_StartsWith(up, "HEADER.FIELDS")) {
+            let lp: int = String_IndexOf(spec, "(")
+            let rp: int = String_IndexOf(spec, ")")
+            var fields: string = ""
+            if (lp >= 0 && rp > lp) { fields = String_Substring(spec, lp + 1, rp - lp - 1) }
+            return ImapSession.selectFields(ImapSession.headerBlock(msg), fields) + "\r\n"
+        }
+        return msg
+    }
+    // En-têtes demandés (sous-ensemble), dans l'ordre du message, repliage conservé.
+    private static string selectFields(string hdr, string fieldsStr) {
+        let wanted: string = " " + String_ToLower(fieldsStr) + " "
+        let lines: List<string> = String_Split(hdr, "\r\n")
+        var out: string = ""
+        var keep: bool = false
+        var i: int = 0
+        while (i < lines.Count()) {
+            let ln: string = lines.Get(i)
+            i = i + 1
+            if (String_Length(ln) > 0) {
+                let c0: string = String_Substring(ln, 0, 1)
+                if (c0 == " " || c0 == "\t") {
+                    if (keep) { out = out + ln + "\r\n" }
+                } else {
+                    let colon: int = String_IndexOf(ln, ":")
+                    var name: string = ""
+                    if (colon >= 0) { name = String_ToLower(String_Trim(String_Substring(ln, 0, colon))) }
+                    keep = String_Length(name) > 0 && String_Contains(wanted, " " + name + " ")
+                    if (keep) { out = out + ln + "\r\n" }
+                }
+            }
+        }
+        return out
+    }
+    // Valeur (repliée) d'un en-tête nommé.
+    private static string headerVal(string hdr, string name) {
+        let lines: List<string> = String_Split(hdr, "\r\n")
+        let want: string = String_ToLower(name) + ":"
+        var val: string = ""
+        var cap: bool = false
+        var i: int = 0
+        while (i < lines.Count()) {
+            let ln: string = lines.Get(i)
+            i = i + 1
+            if (cap) {
+                let c0: string = String_Length(ln) > 0 ? String_Substring(ln, 0, 1) : ""
+                if (c0 == " " || c0 == "\t") { val = val + " " + String_Trim(ln) }
+                else { i = lines.Count() }
+            } else if (String_StartsWith(String_ToLower(ln), want)) {
+                val = String_Trim(String_Substring(ln, String_Length(want), String_Length(ln) - String_Length(want)))
+                cap = true
+            }
+        }
+        return val
+    }
+    // Date d'en-tête RFC 5322 → INTERNALDATE IMAP ("DD-Mon-YYYY HH:MM:SS +ZZZZ").
+    private static string internalDate(string msg) {
+        let d: string = ImapSession.headerVal(ImapSession.headerBlock(msg), "date")
+        var s: string = d
+        let comma: int = String_IndexOf(s, ",")
+        if (comma >= 0) { s = String_Substring(s, comma + 1, String_Length(s) - comma - 1) }
+        s = String_Trim(s)
+        let raw: List<string> = String_Split(s, " ")
+        let toks: List<string> = new List<string>()
+        var i: int = 0
+        while (i < raw.Count()) { let t: string = raw.Get(i); if (String_Length(t) > 0) { toks.Add(t) } i = i + 1 }
+        if (toks.Count() >= 5) {
+            var day: string = toks.Get(0)
+            if (String_Length(day) == 1) { day = "0" + day }
+            return day + "-" + toks.Get(1) + "-" + toks.Get(2) + " " + toks.Get(3) + " " + toks.Get(4)
+        }
+        return "01-Jan-2020 00:00:00 +0000"
+    }
+    // BODYSTRUCTURE : présente le message comme une seule partie texte (suffisant
+    // pour l'affichage mobile du corps ; le client récupère ensuite BODY[TEXT]).
+    private static string bodyStructure(string msg) {
+        let hdr: string = ImapSession.headerBlock(msg)
+        let ct: string = String_ToLower(ImapSession.headerVal(hdr, "content-type"))
+        var sub: string = "PLAIN"
+        if (String_Contains(ct, "text/html")) { sub = "HTML" }
+        let body: string = ImapSession.bodyPart(msg)
+        let octets: int = String_Length(body)
+        var lines: int = 0
+        var i: int = 0
+        while (i < String_Length(body)) { if (String_Substring(body, i, 1) == "\n") { lines = lines + 1 } i = i + 1 }
+        return "(\"TEXT\" \"" + sub + "\" (\"CHARSET\" \"UTF-8\") NIL NIL \"8BIT\" " + String_FromInt(octets) + " " + String_FromInt(lines) + ")"
     }
 
     private string store(string tag, string rest, bool byUid) {

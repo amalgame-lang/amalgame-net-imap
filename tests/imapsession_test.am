@@ -131,6 +131,14 @@ public class Program {
             Console.WriteLine("[PASS] STATUS")
         } else { Console.WriteLine("[FAIL] STATUS: " + stat) }
 
+        // 19. FETCH style mobile : INTERNALDATE (pas 1970) + BODY[HEADER.FIELDS]
+        let u4: int = store.Deliver("INBOX", "Date: Wed, 24 Jun 2026 15:30:00 +0000\r\nSubject: Mobile Test\r\nFrom: x@y.com\r\n\r\nhello mobile")
+        let rs4: string = s.Feed("a13e SELECT \"Inbox\"")
+        let ff: string = s.Feed("a13f UID FETCH " + String_FromInt(u4) + " (UID INTERNALDATE BODY.PEEK[HEADER.FIELDS (subject from date)])")
+        if (String_Contains(ff, "INTERNALDATE \"24-Jun-2026") && String_Contains(ff, "BODY[HEADER.FIELDS") && String_Contains(ff, "Mobile Test")) {
+            Console.WriteLine("[PASS] fetch internaldate + header.fields")
+        } else { Console.WriteLine("[FAIL] fetch hdr: " + ff) }
+
         // 14. logout
         let lo: string = s.Feed("a14 LOGOUT")
         let out: bool = s.IsLoggedOut()
