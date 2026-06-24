@@ -30,7 +30,8 @@ IOFS_DIR="$(sib AMALGAME_IO_FS amalgame-io-filesystem)"
 SQLITE_DIR="$(sib AMALGAME_DB_SQLITE amalgame-database-sqlite)"
 CRYPTO_DIR="$(sib AMALGAME_CRYPTO amalgame-crypto)"
 TLS_DIR="$(sib AMALGAME_TLS amalgame-tls)"
-for v in STORE_DIR:net-mail-store IOFS_DIR:io-filesystem SQLITE_DIR:database-sqlite CRYPTO_DIR:crypto TLS_DIR:tls; do
+MIME_DIR="$(sib AMALGAME_FORMATS_MIME amalgame-formats-mime)"
+for v in STORE_DIR:net-mail-store IOFS_DIR:io-filesystem SQLITE_DIR:database-sqlite CRYPTO_DIR:crypto TLS_DIR:tls MIME_DIR:formats-mime; do
     d="${v%%:*}"; if [ -z "${!d}" ]; then echo "ERROR: ${v##*:} not found (sibling)"; exit 2; fi
 done
 SQLITE_C="$SQLITE_DIR/runtime/Amalgame_Database/sqlite/sqlite3.c"
@@ -72,7 +73,7 @@ tag  = "v0.3.5"
 rev  = "deadbeefcafebabe0000000000000000000000ab"
 EOF
 
-EXT="--external $STORE_DIR/facade.am --external $IOFS_DIR/facade.am --external $CRYPTO_DIR/facade.am"
+EXT="--external $STORE_DIR/facade.am --external $IOFS_DIR/facade.am --external $CRYPTO_DIR/facade.am --external $MIME_DIR/facade.am"
 
 echo "── precompile sqlite3.c ──"
 gcc -O2 $INC -w -c "$SQLITE_C" -o "$BUILD_DIR/sqlite3.o" || { echo "sqlite3.c failed"; exit 1; }
@@ -85,6 +86,7 @@ build_dep_o() { # name  dir  extra-external
 echo "── build dependency .o ──"
 build_dep_o iofs   "$IOFS_DIR"   ""
 build_dep_o crypto "$CRYPTO_DIR" ""
+build_dep_o mime   "$MIME_DIR"   ""
 build_dep_o store  "$STORE_DIR"  "--external $IOFS_DIR/facade.am"
 
 echo "── build smtp-server facade .o ──"
@@ -96,7 +98,7 @@ echo "── build + run test ──"
 cp "$SCRIPT_DIR/imapsession_test.am" "$PKG_DIR/_test.am"
 ( cd "$PKG_DIR" && "$AMC" -o "$BUILD_DIR/test" _test.am $EXT --external facade.am ) 2>&1 | tail -15
 gcc -O2 $INC -Wno-incompatible-pointer-types "$BUILD_DIR/test.c" \
-    "$BUILD_DIR/facade.o" "$BUILD_DIR/store.o" "$BUILD_DIR/iofs.o" "$BUILD_DIR/crypto.o" "$BUILD_DIR/sqlite3.o" \
+    "$BUILD_DIR/facade.o" "$BUILD_DIR/store.o" "$BUILD_DIR/iofs.o" "$BUILD_DIR/crypto.o" "$BUILD_DIR/mime.o" "$BUILD_DIR/sqlite3.o" \
     -lgc -lm -lssl -lcrypto -lz -ldl -lpthread -o "$BUILD_DIR/test" 2>"$BUILD_DIR/gcc.log" \
     || { echo -e "${RED}test link failed${NC}"; cat "$BUILD_DIR/gcc.log"; exit 1; }
 

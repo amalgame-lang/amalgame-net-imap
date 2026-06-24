@@ -139,6 +139,15 @@ public class Program {
             Console.WriteLine("[PASS] fetch internaldate + header.fields")
         } else { Console.WriteLine("[FAIL] fetch hdr: " + ff) }
 
+        // 20. BODY[TEXT] décode le MIME (base64) au lieu de renvoyer le brut
+        let enc: string = "Subject: Enc\r\nContent-Type: multipart/alternative; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\naGVsbG8gZGVjb2RlZA==\r\n--b--\r\n"
+        let u5: int = store.Deliver("INBOX", enc)
+        let rs5: string = s.Feed("a13g SELECT \"Inbox\"")
+        let bt: string = s.Feed("a13h UID FETCH " + String_FromInt(u5) + " (BODY.PEEK[TEXT])")
+        if (String_Contains(bt, "hello decoded") && !String_Contains(bt, "aGVsbG8")) {
+            Console.WriteLine("[PASS] BODY[TEXT] decoded")
+        } else { Console.WriteLine("[FAIL] BODY[TEXT] decoded: " + bt) }
+
         // 14. logout
         let lo: string = s.Feed("a14 LOGOUT")
         let out: bool = s.IsLoggedOut()
