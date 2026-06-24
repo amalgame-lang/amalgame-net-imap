@@ -733,7 +733,32 @@ public class ImapSession {
 
     // Apply a STORE op (FLAGS / +FLAGS / -FLAGS, optionally .SILENT) to a
     // space-separated current flag list, returning the new list.
-    private static string applyFlags(string cur, string op, string flags) {
+    // Les flags système IMAP sont insensibles à la casse : le client peut
+    // envoyer \SEEN / \Deleted / \seen. On les canonicalise (\Seen, \Deleted…)
+    // pour que le store, le webmail et nos vérifs (String_Contains "\\Seen") matchent.
+    private static string normFlag(string f) {
+        let u: string = String_ToUpper(f)
+        if (u == "\\SEEN")     { return "\\Seen" }
+        if (u == "\\DELETED")  { return "\\Deleted" }
+        if (u == "\\FLAGGED")  { return "\\Flagged" }
+        if (u == "\\ANSWERED") { return "\\Answered" }
+        if (u == "\\DRAFT")    { return "\\Draft" }
+        if (u == "\\RECENT")   { return "\\Recent" }
+        return f
+    }
+    private static string normFlags(string flags) {
+        let parts: List<string> = ImapSession.splitWs(flags)
+        var out: string = ""
+        var i: int = 0
+        while (i < parts.Count()) {
+            if (String_Length(out) > 0) { out = out + " " }
+            out = out + ImapSession.normFlag(parts.Get(i))
+            i = i + 1
+        }
+        return out
+    }
+    private static string applyFlags(string cur, string op, string flagsRaw) {
+        let flags: string = ImapSession.normFlags(flagsRaw)
         let add: bool = String_Contains(op, "+")
         let del: bool = String_Contains(op, "-")
         if (!add && !del) { return String_Trim(flags) }     // replace
