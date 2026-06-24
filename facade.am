@@ -97,7 +97,7 @@ public class ImapSession {
         let cmd: string = String_ToUpper(ImapSession.token(line, 1))
         let rest: string = ImapSession.after(line, 2)
         if (String_Length(tag) == 0) { return "* BAD empty tag\r\n" }
-        Console.WriteLine("[imap] " + cmd + (cmd == "SELECT" || cmd == "EXAMINE" ? " " + rest : ""))
+        Console.WriteLine("[imap] " + cmd + (cmd == "LOGIN" ? " <redacted>" : " " + rest))
 
         if (cmd == "CAPABILITY") { return this.cap() + tag + " OK CAPABILITY completed\r\n" }
         // NOOP/CHECK : notifie les nouveaux messages arrivés depuis le snapshot
