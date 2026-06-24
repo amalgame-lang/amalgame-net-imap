@@ -17,7 +17,7 @@
 
 [package]
 name              = "amalgame-net-imap"
-version           = "0.2.10"
+version           = "0.2.11"
 license           = "Apache-2.0"
 description       = "IMAP4rev1 server for the native Amalgame mail server: ImapSession state machine (CAPABILITY/STARTTLS/LOGIN/LIST/SELECT/FETCH/STORE/SEARCH/EXPUNGE) + ImapServer TCP/TLS loop, reading an amalgame-net-mail-store. AUTH via scrypt (amalgame-crypto)."
 authors           = ["Bastien Mouget"]

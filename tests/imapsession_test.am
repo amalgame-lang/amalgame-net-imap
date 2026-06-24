@@ -187,6 +187,14 @@ public class Program {
             Console.WriteLine("[PASS] attachment bodystructure + part fetch")
         } else { Console.WriteLine("[FAIL] attachment: bs=" + bs6 + " b2=" + b2) }
 
+        // 25. Flags système insensibles à la casse : STORE \SEEN (majuscule, comme
+        // les mobiles) → stocké en "\Seen" canonique → vu lu par le webmail/SEARCH.
+        let csr: string = s.Feed("a13o UID STORE " + String_FromInt(u6) + " +FLAGS.SILENT (\\SEEN)")
+        let storedFl: string = store.Flags("INBOX", u6)
+        if (String_Contains(storedFl, "\\Seen") && !String_Contains(storedFl, "\\SEEN")) {
+            Console.WriteLine("[PASS] flag case-insensitive")
+        } else { Console.WriteLine("[FAIL] flag case: [" + storedFl + "]") }
+
         // 14. logout
         let lo: string = s.Feed("a14 LOGOUT")
         let out: bool = s.IsLoggedOut()
