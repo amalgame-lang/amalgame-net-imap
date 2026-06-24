@@ -116,6 +116,9 @@ public class ImapSession {
         if (!this.Authed) { return tag + " NO Not authenticated\r\n" }
 
         if (cmd == "LIST" || cmd == "LSUB") { return this.list(tag, cmd) }
+        if (cmd == "STATUS") { return this.status(tag, rest) }
+        if (cmd == "CREATE") { return tag + " OK CREATE completed\r\n" }   // no-op (le store crée à la livraison)
+        if (cmd == "SUBSCRIBE" || cmd == "UNSUBSCRIBE") { return tag + " OK " + cmd + " completed\r\n" }
         if (cmd == "SELECT" || cmd == "EXAMINE") { return this.select(tag, rest, cmd == "EXAMINE") }
         if (cmd == "FETCH")  { return this.fetch(tag, rest, false) }
         if (cmd == "STORE")  { return this.store(tag, rest, false) }
@@ -185,8 +188,36 @@ public class ImapSession {
         return ""
     }
 
+    // INBOX est insensible à la casse (RFC 3501) : "Inbox"/"inbox" → "INBOX".
+    private static string normMb(string mb) {
+        if (String_ToUpper(mb) == "INBOX") { return "INBOX" }
+        return mb
+    }
+
+    // STATUS <mailbox> (items) — un client mobile l'utilise pour détecter les
+    // nouveaux mails (MESSAGES/UIDNEXT/UNSEEN) sans SELECT.
+    private string status(string tag, string rest) {
+        let raw: string = ImapSession.token(rest, 0)
+        let mb: string = ImapSession.normMb(ImapSession.unquote(raw))
+        let uids: List<int> = this.Store.Uids(mb)
+        let msgs: int = uids.Count()
+        let uidv: int = this.Store.UidValidity(mb)
+        let uidn: int = this.Store.UidNext(mb)
+        var unseen: int = 0
+        var i: int = 0
+        while (i < uids.Count()) {
+            let fl: string = this.Store.Flags(mb, uids.Get(i))
+            if (!String_Contains(fl, "\\Seen")) { unseen = unseen + 1 }
+            i = i + 1
+        }
+        var s: string = "* STATUS " + raw + " (MESSAGES " + String_FromInt(msgs)
+            + " RECENT 0 UIDNEXT " + String_FromInt(uidn) + " UIDVALIDITY " + String_FromInt(uidv)
+            + " UNSEEN " + String_FromInt(unseen) + ")\r\n"
+        return s + tag + " OK STATUS completed\r\n"
+    }
+
     private string select(string tag, string rest, bool examine) {
-        let mb: string = ImapSession.unquote(ImapSession.token(rest, 0))
+        let mb: string = ImapSession.normMb(ImapSession.unquote(ImapSession.token(rest, 0)))
         this.SelMb = mb
         this.SelUids = this.Store.Uids(mb)
         let cnt: int = this.SelUids.Count()
