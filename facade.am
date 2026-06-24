@@ -62,6 +62,7 @@ public class ImapSession {
 
     private SelMb:     string          // selected mailbox ("" = none)
     private SelUids:   List<int>       // UID snapshot taken at SELECT (seq = index+1)
+    private SelFlags:  List<string>    // flags snapshot parallèle à SelUids (sync lu/non-lu)
     private Upgrade:   bool
     private LoggedOut: bool
     private AuthFails: int             // failed LOGINs (brute-force lockout)
@@ -76,6 +77,7 @@ public class ImapSession {
         this.AuthUser  = ""
         this.SelMb     = ""
         this.SelUids   = new List<int>()
+        this.SelFlags  = new List<string>()
         this.Upgrade   = false
         this.LoggedOut = false
         this.AuthFails = 0
@@ -103,8 +105,8 @@ public class ImapSession {
         if (cmd == "CAPABILITY") { return this.cap() + tag + " OK CAPABILITY completed\r\n" }
         // NOOP/CHECK : notifie les nouveaux messages arrivés depuis le snapshot
         // (* n EXISTS non sollicité) → un client qui « relève » via NOOP les voit.
-        if (cmd == "NOOP")  { return this.pollNew() + tag + " OK NOOP completed\r\n" }
-        if (cmd == "CHECK") { return this.pollNew() + tag + " OK CHECK completed\r\n" }
+        if (cmd == "NOOP")  { return this.pollChanges() + tag + " OK NOOP completed\r\n" }
+        if (cmd == "CHECK") { return this.pollChanges() + tag + " OK CHECK completed\r\n" }
         if (cmd == "LOGOUT") { this.LoggedOut = true; return "* BYE Amalgame IMAP logging out\r\n" + tag + " OK LOGOUT completed\r\n" }
         if (cmd == "STARTTLS") {
             if (this.TlsActive) { return tag + " BAD Already using TLS\r\n" }
@@ -125,6 +127,8 @@ public class ImapSession {
         if (cmd == "STORE")  { return this.store(tag, rest, false) }
         if (cmd == "SEARCH") { return this.search(tag, rest, false) }
         if (cmd == "EXPUNGE") { return this.expunge(tag) }
+        if (cmd == "COPY") { return this.copy(tag, rest, false) }
+        if (cmd == "MOVE") { return this.move(tag, rest, false) }
         if (cmd == "CLOSE") { let e: string = this.expungeSilent(); this.SelMb = ""; return tag + " OK CLOSE completed\r\n" }
         if (cmd == "UID") {
             let sub: string = String_ToUpper(ImapSession.token(rest, 0))
@@ -132,6 +136,8 @@ public class ImapSession {
             if (sub == "FETCH")  { return this.fetch(tag, subRest, true) }
             if (sub == "STORE")  { return this.store(tag, subRest, true) }
             if (sub == "SEARCH") { return this.search(tag, subRest, true) }
+            if (sub == "COPY")   { return this.copy(tag, subRest, true) }
+            if (sub == "MOVE")   { return this.move(tag, subRest, true) }
             return tag + " BAD UID subcommand unsupported\r\n"
         }
         return tag + " BAD Command unrecognized\r\n"
@@ -140,7 +146,7 @@ public class ImapSession {
     // ── command handlers ──────────────────────────────
 
     private string cap() {
-        if (this.TlsActive) { return "* CAPABILITY IMAP4rev1\r\n" }
+        if (this.TlsActive) { return "* CAPABILITY IMAP4rev1 MOVE\r\n" }
         return "* CAPABILITY IMAP4rev1 STARTTLS LOGINDISABLED\r\n"
     }
 
@@ -176,17 +182,63 @@ public class ImapSession {
         return out + tag + " OK " + cmd + " completed\r\n"
     }
 
-    // Si de nouveaux messages sont arrivés dans le dossier sélectionné depuis le
-    // dernier snapshot, renvoie un "* n EXISTS" non sollicité et met à jour le
-    // snapshot (pour que FETCH <seq> retrouve les nouveaux). Vide sinon.
-    private string pollNew() {
+    // Capture l'état des flags parallèlement à SelUids (pour la synchro lu/non-lu).
+    private void captureFlags() {
+        this.SelFlags = new List<string>()
+        var i: int = 0
+        while (i < this.SelUids.Count()) {
+            this.SelFlags.Add(this.Store.Flags(this.SelMb, this.SelUids.Get(i)))
+            i = i + 1
+        }
+    }
+
+    // Synchro non sollicitée (NOOP/CHECK) : compare l'état courant du store au
+    // snapshot et émet EXPUNGE (messages supprimés ailleurs, ex. webmail),
+    // EXISTS (nouveaux) et FETCH FLAGS (lu/non-lu changé). Rafraîchit le snapshot.
+    private string pollChanges() {
         if (String_Length(this.SelMb) == 0) { return "" }
         let cur: List<int> = this.Store.Uids(this.SelMb)
-        if (cur.Count() > this.SelUids.Count()) {
-            this.SelUids = cur
-            return "* " + String_FromInt(cur.Count()) + " EXISTS\r\n* 0 RECENT\r\n"
+        var out: string = ""
+        // 1. EXPUNGE des UID du snapshot disparus (seq ancien, ajusté des expunges déjà émis).
+        var removed: int = 0
+        var i: int = 0
+        while (i < this.SelUids.Count()) {
+            let uid: int = this.SelUids.Get(i)
+            if (!ImapSession.hasInt(cur, uid)) {
+                out = out + "* " + String_FromInt(i + 1 - removed) + " EXPUNGE\r\n"
+                removed = removed + 1
+            }
+            i = i + 1
         }
-        return ""
+        // 2. EXISTS si de nouveaux messages.
+        let surv: int = this.SelUids.Count() - removed
+        if (cur.Count() > surv) { out = out + "* " + String_FromInt(cur.Count()) + " EXISTS\r\n* 0 RECENT\r\n" }
+        // 3. FETCH FLAGS pour les survivants dont les flags ont changé (seq sur `cur`).
+        var j: int = 0
+        while (j < cur.Count()) {
+            let uid: int = cur.Get(j)
+            let oldIdx: int = ImapSession.indexOfInt(this.SelUids, uid)
+            if (oldIdx >= 0) {
+                let nowFl: string = this.Store.Flags(this.SelMb, uid)
+                if (nowFl != this.SelFlags.Get(oldIdx)) {
+                    out = out + "* " + String_FromInt(j + 1) + " FETCH (UID " + String_FromInt(uid) + " FLAGS (" + nowFl + "))\r\n"
+                }
+            }
+            j = j + 1
+        }
+        this.SelUids = cur
+        this.captureFlags()
+        return out
+    }
+    private static bool hasInt(List<int> l, int x) {
+        var i: int = 0
+        while (i < l.Count()) { if (l.Get(i) == x) { return true } i = i + 1 }
+        return false
+    }
+    private static int indexOfInt(List<int> l, int x) {
+        var i: int = 0
+        while (i < l.Count()) { if (l.Get(i) == x) { return i } i = i + 1 }
+        return -1
     }
 
     // INBOX est insensible à la casse (RFC 3501) : "Inbox"/"inbox" → "INBOX".
@@ -221,6 +273,7 @@ public class ImapSession {
         let mb: string = ImapSession.normMb(ImapSession.unquote(ImapSession.token(rest, 0)))
         this.SelMb = mb
         this.SelUids = this.Store.Uids(mb)
+        this.captureFlags()
         let cnt: int = this.SelUids.Count()
         let uidv: int = this.Store.UidValidity(mb)
         let uidn: int = this.Store.UidNext(mb)
@@ -499,7 +552,56 @@ public class ImapSession {
             s = s - 1
         }
         this.SelUids = this.Store.Uids(this.SelMb)
+        this.captureFlags()
         return out
+    }
+
+    // COPY <set> <mailbox> : copie les messages vers un autre dossier (même compte).
+    private string copy(string tag, string rest, bool byUid) {
+        if (String_Length(this.SelMb) == 0) { return tag + " NO No mailbox selected\r\n" }
+        let setSpec: string = ImapSession.token(rest, 0)
+        let target: string = ImapSession.normMb(ImapSession.unquote(ImapSession.token(rest, 1)))
+        let cnt: int = this.SelUids.Count()
+        var okAll: bool = true
+        for s in 1..(cnt + 1) {
+            let uid: int = this.SelUids.Get(s - 1)
+            var hit: bool = false
+            if (byUid) { hit = ImapSession.inSet(setSpec, uid, this.maxUid()) }
+            else { hit = ImapSession.inSet(setSpec, s, cnt) }
+            if (hit) {
+                let raw: string = this.Store.Read(this.SelMb, uid)
+                if (String_Length(raw) > 0) { let nu: int = this.Store.Deliver(target, raw); if (nu <= 0) { okAll = false } }
+            }
+        }
+        if (!okAll) { return tag + " NO COPY failed\r\n" }
+        return tag + " OK " + this.uidTag(byUid) + "COPY completed\r\n"
+    }
+
+    // MOVE <set> <mailbox> (RFC 6851) : copie + supprime de la source + EXPUNGE.
+    // C'est ce qu'un client mobile fait pour « supprimer » (déplacer en Corbeille).
+    private string move(string tag, string rest, bool byUid) {
+        if (String_Length(this.SelMb) == 0) { return tag + " NO No mailbox selected\r\n" }
+        let setSpec: string = ImapSession.token(rest, 0)
+        let target: string = ImapSession.normMb(ImapSession.unquote(ImapSession.token(rest, 1)))
+        var out: string = ""
+        let cnt: int = this.SelUids.Count()
+        var s: int = cnt
+        while (s >= 1) {
+            let uid: int = this.SelUids.Get(s - 1)
+            var hit: bool = false
+            if (byUid) { hit = ImapSession.inSet(setSpec, uid, this.maxUid()) }
+            else { hit = ImapSession.inSet(setSpec, s, cnt) }
+            if (hit) {
+                let raw: string = this.Store.Read(this.SelMb, uid)
+                if (String_Length(raw) > 0) { this.Store.Deliver(target, raw) }
+                this.Store.Delete(this.SelMb, uid)
+                out = out + "* " + String_FromInt(s) + " EXPUNGE\r\n"
+            }
+            s = s - 1
+        }
+        this.SelUids = this.Store.Uids(this.SelMb)
+        this.captureFlags()
+        return out + tag + " OK " + this.uidTag(byUid) + "MOVE completed\r\n"
     }
 
     // ── helpers ───────────────────────────────────────

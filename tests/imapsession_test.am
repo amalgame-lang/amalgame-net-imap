@@ -148,6 +148,33 @@ public class Program {
             Console.WriteLine("[PASS] BODY[TEXT] decoded")
         } else { Console.WriteLine("[FAIL] BODY[TEXT] decoded: " + bt) }
 
+        // 21. SYNC web→tel : suppression externe (store) → NOOP émet EXPUNGE
+        store.Delete("INBOX", u4)
+        let np1: string = s.Feed("a13i NOOP")
+        if (String_Contains(np1, "EXPUNGE") && String_Contains(np1, "a13i OK")) {
+            Console.WriteLine("[PASS] sync expunge on poll")
+        } else { Console.WriteLine("[FAIL] sync expunge: " + np1) }
+
+        // 22. SYNC lu/non-lu : flag changé hors session → NOOP émet FETCH FLAGS
+        store.SetFlags("INBOX", u1, "\\Seen \\Flagged")
+        let np2: string = s.Feed("a13j NOOP")
+        if (String_Contains(np2, "FETCH") && String_Contains(np2, "\\Flagged") && String_Contains(np2, "a13j OK")) {
+            Console.WriteLine("[PASS] sync flags on poll")
+        } else { Console.WriteLine("[FAIL] sync flags: " + np2) }
+
+        // 23. MOVE (tel → Corbeille) : message déplacé + EXPUNGE
+        let mv: string = s.Feed("a13k UID MOVE " + String_FromInt(u5) + " Trash")
+        let trashUids: List<int> = store.Uids("Trash")
+        var inTrash: bool = false
+        var ti2: int = 0
+        while (ti2 < trashUids.Count()) {
+            if (String_Contains(store.Read("Trash", trashUids.Get(ti2)), "aGVsbG8")) { inTrash = true }
+            ti2 = ti2 + 1
+        }
+        if (String_Contains(mv, "EXPUNGE") && String_Contains(mv, "a13k OK") && inTrash) {
+            Console.WriteLine("[PASS] move to Trash")
+        } else { Console.WriteLine("[FAIL] move: " + mv + " inTrash=" + (inTrash ? "y" : "n")) }
+
         // 14. logout
         let lo: string = s.Feed("a14 LOGOUT")
         let out: bool = s.IsLoggedOut()
