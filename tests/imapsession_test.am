@@ -57,6 +57,11 @@ public class Program {
         let li: string = s.Feed("a4 LIST \"\" \"*\"")
         if (String_Contains(li, "INBOX") && String_Contains(li, "a4 OK")) { Console.WriteLine("[PASS] list") }
         else { Console.WriteLine("[FAIL] list: " + li) }
+        // 6b. SPECIAL-USE : le dossier Trash porte le flag \\Trash
+        let _t: int = store.Deliver("Trash", "Subject: x\r\n\r\ny")
+        let li2: string = s.Feed("a4b LIST \"\" \"*\"")
+        if (String_Contains(li2, "\\Trash") && String_Contains(li2, "Trash")) { Console.WriteLine("[PASS] special-use") }
+        else { Console.WriteLine("[FAIL] special-use: " + li2) }
 
         // 7. select
         let sel: string = s.Feed("a5 SELECT INBOX")
