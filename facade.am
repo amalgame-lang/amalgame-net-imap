@@ -145,6 +145,7 @@ public class ImapSession {
             if (sub == "FETCH")  { return this.fetch(tag, subRest, true) }
             if (sub == "STORE")  { return this.store(tag, subRest, true) }
             if (sub == "SEARCH") { return this.search(tag, subRest, true) }
+            if (sub == "EXPUNGE") { return this.uidExpunge(tag, subRest) }
             if (sub == "COPY")   { return this.copy(tag, subRest, true) }
             if (sub == "MOVE")   { return this.move(tag, subRest, true) }
             return tag + " BAD UID subcommand unsupported\r\n"
@@ -155,7 +156,7 @@ public class ImapSession {
     // ── command handlers ──────────────────────────────
 
     private string cap() {
-        if (this.TlsActive) { return "* CAPABILITY IMAP4rev1 MOVE SPECIAL-USE\r\n" }
+        if (this.TlsActive) { return "* CAPABILITY IMAP4rev1 MOVE SPECIAL-USE UIDPLUS\r\n" }
         return "* CAPABILITY IMAP4rev1 STARTTLS LOGINDISABLED\r\n"
     }
 
@@ -616,6 +617,30 @@ public class ImapSession {
         if (String_Length(this.SelMb) == 0) { return tag + " NO No mailbox selected\r\n" }
         let out: string = this.expungeSilent()
         return out + tag + " OK EXPUNGE completed\r\n"
+    }
+
+    // UID EXPUNGE <set> (UIDPLUS, RFC 4315) : n'expunge que les messages \Deleted
+    // dont l'UID est dans le set. C'est ce qu'un client mobile exige pour oser
+    // supprimer (sans risquer d'expunger d'autres \Deleted). seq émis high→low.
+    private string uidExpunge(string tag, string rest) {
+        if (String_Length(this.SelMb) == 0) { return tag + " NO No mailbox selected\r\n" }
+        let setSpec: string = ImapSession.token(rest, 0)
+        var out: string = ""
+        var s: int = this.SelUids.Count()
+        while (s >= 1) {
+            let uid: int = this.SelUids.Get(s - 1)
+            if (ImapSession.inSet(setSpec, uid, this.maxUid())) {
+                let fl: string = this.Store.Flags(this.SelMb, uid)
+                if (String_Contains(fl, "\\Deleted")) {
+                    this.Store.Delete(this.SelMb, uid)
+                    out = out + "* " + String_FromInt(s) + " EXPUNGE\r\n"
+                }
+            }
+            s = s - 1
+        }
+        this.SelUids = this.Store.Uids(this.SelMb)
+        this.captureFlags()
+        return out + tag + " OK UID EXPUNGE completed\r\n"
     }
 
     // Delete \Deleted messages; emit "* <seq> EXPUNGE" high→low so the
