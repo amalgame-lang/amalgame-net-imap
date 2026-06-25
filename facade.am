@@ -992,6 +992,7 @@ public class ImapServer {
                     let line: string = String_Substring(tbuf, 0, nl)
                     tbuf = String_Substring(tbuf, nl + 2, String_Length(tbuf) - nl - 2)
                     let resp: string = sess.Feed(line)
+                    if (String_Contains(resp, " NO ") || String_Contains(resp, " BAD ")) { Console.WriteLine("[imap-err] " + resp) }
                     if (String_Length(resp) > 0) { ImapServer.sendTls(tls, resp) }
                     // APPEND : lit le literal de N octets puis le livre.
                     var lit: int = sess.WantsLiteral()
