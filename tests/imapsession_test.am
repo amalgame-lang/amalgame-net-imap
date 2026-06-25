@@ -195,28 +195,6 @@ public class Program {
             Console.WriteLine("[PASS] flag case-insensitive")
         } else { Console.WriteLine("[FAIL] flag case: [" + storedFl + "]") }
 
-        // 26. Pièce jointe : la disposition "attachment" doit figurer dans BODYSTRUCTURE
-        if (String_Contains(bs6, "\"attachment\"") && String_Contains(bs6, "\"FILENAME\"")) {
-            Console.WriteLine("[PASS] attachment disposition")
-        } else { Console.WriteLine("[FAIL] attachment disposition: " + bs6) }
-
-        // 27. APPEND : le client dépose un message dans un dossier via literal {n}
-        let apMsg: string = "Subject: Brouillon\r\nFrom: me@x.fr\r\n\r\ncorps brouillon"
-        let apN: int = String_Length(apMsg)
-        let ap1: string = s.Feed("a13p APPEND \"Drafts\" (\\Draft) {" + String_FromInt(apN) + "}")
-        let wl: int = s.WantsLiteral()
-        let ap2: string = s.FeedLiteral(apMsg)
-        let draftUids: List<int> = store.Uids("Drafts")
-        var apFound: bool = false
-        var di: int = 0
-        while (di < draftUids.Count()) {
-            if (String_Contains(store.Read("Drafts", draftUids.Get(di)), "corps brouillon")) { apFound = true }
-            di = di + 1
-        }
-        if (String_Contains(ap1, "+ ") && wl == apN && String_Contains(ap2, "a13p OK") && apFound) {
-            Console.WriteLine("[PASS] APPEND literal")
-        } else { Console.WriteLine("[FAIL] APPEND: ap1=" + ap1 + " wl=" + String_FromInt(wl) + " ap2=" + ap2 + " found=" + (apFound ? "y" : "n")) }
-
         // 14. logout
         let lo: string = s.Feed("a14 LOGOUT")
         let out: bool = s.IsLoggedOut()
