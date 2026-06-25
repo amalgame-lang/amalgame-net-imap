@@ -63,6 +63,19 @@ public class Program {
         if (String_Contains(li2, "\\Trash") && String_Contains(li2, "Trash")) { Console.WriteLine("[PASS] special-use") }
         else { Console.WriteLine("[FAIL] special-use: " + li2) }
 
+        // APPEND : dépose un message via literal {n} (le tél l'utilise pour supprimer)
+        let apMsg: string = "Subject: Brouillon\r\nFrom: me@x.fr\r\n\r\ncorps brouillon"
+        let apN: int = String_Length(apMsg)
+        let ap1: string = s.Feed("zAP APPEND \"Drafts\" (\\Draft) {" + String_FromInt(apN) + "}")
+        let wl: int = s.WantsLiteral()
+        let ap2: string = s.FeedLiteral(apMsg)
+        let dru: List<int> = store.Uids("Drafts")
+        var apF: bool = false
+        var dii: int = 0
+        while (dii < dru.Count()) { if (String_Contains(store.Read("Drafts", dru.Get(dii)), "corps brouillon")) { apF = true } dii = dii + 1 }
+        if (String_Contains(ap1, "+ ") && wl == apN && String_Contains(ap2, "zAP OK") && apF) { Console.WriteLine("[PASS] APPEND literal") }
+        else { Console.WriteLine("[FAIL] APPEND: ap1=" + ap1 + " wl=" + String_FromInt(wl) + " ap2=" + ap2) }
+
         // 7. select
         let sel: string = s.Feed("a5 SELECT INBOX")
         if (String_Contains(sel, "2 EXISTS") && String_Contains(sel, "UIDVALIDITY")

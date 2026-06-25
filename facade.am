@@ -63,6 +63,10 @@ public class ImapSession {
     private SelMb:     string          // selected mailbox ("" = none)
     private SelUids:   List<int>       // UID snapshot taken at SELECT (seq = index+1)
     private SelFlags:  List<string>    // flags snapshot parallèle à SelUids (sync lu/non-lu)
+    private PendN:     int             // APPEND: octets de literal attendus (0 = aucun)
+    private PendMb:    string          // APPEND: dossier cible
+    private PendFlags: string          // APPEND: flags à poser
+    private PendTag:   string          // APPEND: tag pour la réponse finale
     private Upgrade:   bool
     private LoggedOut: bool
     private AuthFails: int             // failed LOGINs (brute-force lockout)
@@ -78,6 +82,10 @@ public class ImapSession {
         this.SelMb     = ""
         this.SelUids   = new List<int>()
         this.SelFlags  = new List<string>()
+        this.PendN     = 0
+        this.PendMb    = ""
+        this.PendFlags = ""
+        this.PendTag   = ""
         this.Upgrade   = false
         this.LoggedOut = false
         this.AuthFails = 0
@@ -127,6 +135,7 @@ public class ImapSession {
         if (cmd == "STORE")  { return this.store(tag, rest, false) }
         if (cmd == "SEARCH") { return this.search(tag, rest, false) }
         if (cmd == "EXPUNGE") { return this.expunge(tag) }
+        if (cmd == "APPEND") { return this.append(tag, rest) }
         if (cmd == "COPY") { return this.copy(tag, rest, false) }
         if (cmd == "MOVE") { return this.move(tag, rest, false) }
         if (cmd == "CLOSE") { let e: string = this.expungeSilent(); this.SelMb = ""; return tag + " OK CLOSE completed\r\n" }
@@ -631,6 +640,46 @@ public class ImapSession {
     }
 
     // COPY <set> <mailbox> : copie les messages vers un autre dossier (même compte).
+    // APPEND <mailbox> [(flags)] [date] {n} : le client dépose un message brut
+    // dans un dossier (sauvegarde Sent/Drafts, suppression = dépôt en Corbeille).
+    // On parse l'enveloppe ; le transport lit ensuite le literal de n octets et
+    // appelle FeedLiteral. WantsLiteral() != 0 signale au transport de lire.
+    private string append(string tag, string rest) {
+        let mb: string = ImapSession.normMb(ImapSession.unquote(ImapSession.token(rest, 0)))
+        let lb: int = String_IndexOf(rest, "{")
+        let rb: int = String_IndexOf(rest, "}")
+        if (lb < 0 || rb < lb) { return tag + " BAD APPEND expects a literal\r\n" }
+        var nStr: string = String_Substring(rest, lb + 1, rb - lb - 1)
+        if (String_EndsWith(nStr, "+")) { nStr = String_Substring(nStr, 0, String_Length(nStr) - 1) }   // literal non-synchronisant
+        let n: int = String_ToInt(nStr)
+        // Garde-fou : taille aberrante (parse foireux / abus) → refus, pas de lecture.
+        if (n <= 0 || n > 52428800) { return tag + " NO APPEND invalid size\r\n" }
+        var flags: string = ""
+        let lp: int = String_IndexOf(rest, "(")
+        let rp: int = String_IndexOf(rest, ")")
+        if (lp >= 0 && rp > lp) { flags = ImapSession.normFlags(String_Substring(rest, lp + 1, rp - lp - 1)) }
+        this.PendTag = tag
+        this.PendMb = mb
+        this.PendFlags = flags
+        this.PendN = n
+        if (String_IndexOf(rest, "+}") >= 0) { return "" }   // données immédiates (non-sync)
+        return "+ Ready for literal data\r\n"
+    }
+    // Octets de literal que le transport doit lire (0 = aucun).
+    public int WantsLiteral() { return this.PendN }
+    // Reçoit le literal lu par le transport → livre le message dans le dossier.
+    public string FeedLiteral(string data) {
+        let tag: string = this.PendTag
+        let mb: string = this.PendMb
+        let fl: string = this.PendFlags
+        this.PendN = 0; this.PendTag = ""; this.PendMb = ""; this.PendFlags = ""
+        let uid: int = this.Store.Deliver(mb, data)
+        if (uid <= 0) { return tag + " NO [TRYCREATE] APPEND failed\r\n" }
+        if (String_Length(fl) > 0) { this.Store.SetFlags(mb, uid, fl) }
+        let uidv: int = this.Store.UidValidity(mb)
+        return tag + " OK [APPENDUID " + String_FromInt(uidv) + " " + String_FromInt(uid) + "] APPEND completed\r\n"
+    }
+
     private string copy(string tag, string rest, bool byUid) {
         if (String_Length(this.SelMb) == 0) { return tag + " NO No mailbox selected\r\n" }
         let setSpec: string = ImapSession.token(rest, 0)
@@ -944,6 +993,22 @@ public class ImapServer {
                     tbuf = String_Substring(tbuf, nl + 2, String_Length(tbuf) - nl - 2)
                     let resp: string = sess.Feed(line)
                     if (String_Length(resp) > 0) { ImapServer.sendTls(tls, resp) }
+                    // APPEND : lit le literal de N octets puis le livre.
+                    var lit: int = sess.WantsLiteral()
+                    while (lit > 0 && !done) {
+                        while (String_Length(tbuf) < lit && !done) {
+                            let ch: string = ImapServer.recvTls(tls, 16384)
+                            if (String_Length(ch) == 0) { done = true } else { tbuf = tbuf + ch }
+                        }
+                        if (!done) {
+                            let data: string = String_Substring(tbuf, 0, lit)
+                            tbuf = String_Substring(tbuf, lit, String_Length(tbuf) - lit)
+                            if (String_StartsWith(tbuf, "\r\n")) { tbuf = String_Substring(tbuf, 2, String_Length(tbuf) - 2) }
+                            let r2: string = sess.FeedLiteral(data)
+                            if (String_Length(r2) > 0) { ImapServer.sendTls(tls, r2) }
+                            lit = sess.WantsLiteral()
+                        }
+                    }
                     if (sess.IsLoggedOut()) { done = true }
                 }
             }
@@ -982,6 +1047,21 @@ public class ImapServer {
                 buf = String_Substring(buf, nl + 2, String_Length(buf) - nl - 2)
                 let resp: string = sess.Feed(line)
                 if (String_Length(resp) > 0) { ImapServer.sendFd(fd, resp) }
+                var lit: int = sess.WantsLiteral()
+                while (lit > 0 && phase == 0) {
+                    while (String_Length(buf) < lit && phase == 0) {
+                        let ch: string = ImapServer.recvFd(fd, 16384)
+                        if (String_Length(ch) == 0) { phase = 1 } else { buf = buf + ch }
+                    }
+                    if (phase == 0) {
+                        let data: string = String_Substring(buf, 0, lit)
+                        buf = String_Substring(buf, lit, String_Length(buf) - lit)
+                        if (String_StartsWith(buf, "\r\n")) { buf = String_Substring(buf, 2, String_Length(buf) - 2) }
+                        let r2: string = sess.FeedLiteral(data)
+                        if (String_Length(r2) > 0) { ImapServer.sendFd(fd, r2) }
+                        lit = sess.WantsLiteral()
+                    }
+                }
                 if (sess.IsLoggedOut()) { phase = 1 }
                 else if (sess.WantsTlsUpgrade()) { phase = 2 }
             }
@@ -1010,6 +1090,21 @@ public class ImapServer {
                         tbuf = String_Substring(tbuf, nl + 2, String_Length(tbuf) - nl - 2)
                         let resp: string = sess.Feed(line)
                         if (String_Length(resp) > 0) { ImapServer.sendTls(tls, resp) }
+                        var lit: int = sess.WantsLiteral()
+                        while (lit > 0 && !done) {
+                            while (String_Length(tbuf) < lit && !done) {
+                                let ch: string = ImapServer.recvTls(tls, 16384)
+                                if (String_Length(ch) == 0) { done = true } else { tbuf = tbuf + ch }
+                            }
+                            if (!done) {
+                                let data: string = String_Substring(tbuf, 0, lit)
+                                tbuf = String_Substring(tbuf, lit, String_Length(tbuf) - lit)
+                                if (String_StartsWith(tbuf, "\r\n")) { tbuf = String_Substring(tbuf, 2, String_Length(tbuf) - 2) }
+                                let r2: string = sess.FeedLiteral(data)
+                                if (String_Length(r2) > 0) { ImapServer.sendTls(tls, r2) }
+                                lit = sess.WantsLiteral()
+                            }
+                        }
                         if (sess.IsLoggedOut()) { done = true }
                     }
                 }
