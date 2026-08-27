@@ -984,6 +984,18 @@ public class ImapServer {
 
     private void handleTls(int fd) {
         if (!this.HasCert) { @c { close((int) fd); } return }
+        ImapServer.setRecvTimeout(fd, 60)
+        // Anti-corruption : ce port est TLS implicite dès l'accept (pas de
+        // phase en clair). Des scanners envoient du HTTP brut ici (cf.
+        // incidents 2026-08-26/27, "ROOTEVIDENCE/1.0" sur :993) — ça n'est
+        // jamais un ClientHello valide et fait planter la stack config le
+        // temps de comprendre pourquoi. On vérifie l'octet de type
+        // d'enregistrement TLS (0x16 = Handshake) AVANT tout Handshake().
+        if (!ImapServer.looksLikeTls(fd)) {
+            Console.WriteLine("[imap-tls-reject] host=" + this.Host + " — octets non-TLS sur port implicite, fermé avant handshake")
+            @c { close((int) fd); }
+            return
+        }
         let sess: ImapSession = new ImapSession(this.Store, this.Host)
         sess.Resolver = this.Resolver
         let keys: List<string> = this.Users.Keys()
@@ -993,7 +1005,6 @@ public class ImapServer {
             let v: string = this.Users.Get(k)
             sess.AddUserHash(k, v)
         }
-        ImapServer.setRecvTimeout(fd, 60)
         let cfg0: TlsConfig = TlsConfig.Default()
         let cfg:  TlsConfig = TlsConfig.WithCertFile(cfg0, this.Cert, this.Key)
         let ctx:  TlsContext = TlsContext.Server(cfg)
@@ -1146,6 +1157,21 @@ public class ImapServer {
             tv.tv_sec = (long) secs; tv.tv_usec = 0;
             setsockopt((int) fd, SOL_SOCKET, SO_RCVTIMEO, (const void*) &tv, sizeof(tv));
         }
+    }
+
+    // Regarde (sans consommer, MSG_PEEK) le premier octet reçu : un vrai
+    // ClientHello TLS commence toujours par 0x16 (record type Handshake).
+    // Tout le reste (HTTP en clair, scanners...) est rejeté avant d'atteindre
+    // TlsStream.Handshake(). setRecvTimeout() doit avoir été appelé avant
+    // (sinon un client muet bloque ce peek indéfiniment).
+    private static bool looksLikeTls(int fd) {
+        var ok: bool = false
+        @c {
+            unsigned char b0 = 0;
+            long n = (long) recv((int) fd, &b0, 1, MSG_PEEK);
+            ok = (n == 1 && b0 == 0x16);
+        }
+        return ok
     }
     private static string recvFd(int fd, int max) {
         var r: string = ""
